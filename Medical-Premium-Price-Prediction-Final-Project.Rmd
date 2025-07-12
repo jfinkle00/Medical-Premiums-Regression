@@ -1,0 +1,698 @@
+---
+title: "Medical Premium Price Prediction Final Project"
+author: "Erika, Jason, Fiona"
+date: "2025-04-24"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+# Import the libraries
+
+```{r}
+rm(list=ls())
+#install.packages("MASS")
+#install.packages("tidymodels")
+# install.packages("glmnet")
+# install.packages("rpart.plot")
+# install.packages("yardstick")
+# install.packages("rpart")
+library(readr)
+library(tidyverse)
+library(ggplot2)
+library(reshape2)
+library(glmnet)
+library(dplyr)
+library(caret) #machine learning library
+library(xgboost) #XGBoost library
+library(rpart)
+library(MASS)
+library(yardstick)
+library(tidymodels)
+library(rpart.plot)
+library(cluster)
+library(factoextra)  # for visualizing clusters
+```
+
+# Load the Medical Premium Data
+
+```{r}
+df <- read_csv("~/Desktop/Medicalpremium.csv")
+```
+
+# Creation of a New Variable
+
+```{r}
+df <- df %>%
+  mutate(BMI = Weight/((Height/100)^2)) 
+
+# view(df)
+glimpse(df)
+
+head(df)
+
+#Summary of the data (checking if any NA)
+summary(df)
+sapply(df, class)
+sum(is.na(df))
+
+#ensuring that it is a numerical data
+df[] <- sapply(df, as.numeric)
+```
+
+There is no NA values
+
+# Data Preprocessing
+
+## Viewing the variables of the data using boxplot, qqnorms, correlation matrix, histogram and violen plots
+
+```{r}
+#Boxplots and Histograms
+# Create lists to store plots
+boxplot_list <- list()
+hist_list <- list()
+qqnorm_list <- list()
+
+for (i in 1:ncol(df)) {
+  column_name <- names(df)[i]
+  
+  # Create boxplot and histogram for each column
+  boxplot(df[[i]], main = paste("Boxplot of", column_name))
+  hist(df[[i]], main = paste("Histogram of", column_name))
+  qqnorm(df[[i]], main = paste("QQnorm of", column_name))
+  
+  # Save plots (optional - storing as plot objects or images)
+  boxplot_list[[i]] <- recordPlot()
+  hist_list[[i]] <- recordPlot()
+  qqnorm_list[[i]] <- recordPlot()
+}
+
+
+
+#Correlation matrix 
+data <- cor(df[sapply(df,is.numeric)])
+data1 <- melt(data)
+
+ggplot(data1,aes(x= Var1, y=Var2,fill=value)) +
+  geom_tile() +
+  scale_x_discrete(labels=abbreviate)+
+  scale_y_discrete(labels=abbreviate)
+
+
+#Violin plots - categorical variables 
+#Categorical variables include Diabetes, BloodPressureProblems, AnyTransplants, AnyChronicDiseases, KnownAllergies, HistoryOfCancerInFamily, NumberOfMajorSurgeries (x variables)
+#Premium price as y variable
+
+cat_labels <- c("Diabetes", "BloodPressureProblems", "AnyTransplants", "AnyChronicDiseases", "KnownAllergies", "HistoryOfCancerInFamily", "NumberOfMajorSurgeries")
+
+df_long <- df %>%
+  pivot_longer(cols = all_of(cat_labels), names_to = "x_var", values_to = "x_value")
+
+
+ggplot(df_long, aes(x = x_value, y = PremiumPrice)) +
+  geom_violin(trim = FALSE, fill = "skyblue", color = "black") +
+  geom_boxplot(width = 0.1, fill = "white") +
+  facet_wrap(~ x_var, scales = "free_x") +
+  theme_minimal() +
+  labs(title = "PremiumPrice vs Various Categories", x = "Category Value", y = "PremiumPrice")
+```
+
+**1. QQ Plots (Quantile-Quantile Plots)**
+
+Purpose: Check whether each variable (e.g., Age, Weight, PremiumPrice) follows a normal distribution.
+
+What We Observed: Most variables do not align perfectly with the diagonal line, meaning they are not normally distributed.
+For example, PremiumPrice is right-skewed, indicating outliers and a long tail of higher prices.
+
+Business Interpretation:
+
+-   Health costs (premiums) vary widely, and this non-normality supports using nonlinear models (e.g., XGBoost).
+
+-   Stakeholders should be cautious using statistical methods assuming normality.
+
+**2. Histograms**
+
+Purpose: Visualize the distribution of each feature to spot skewness, outliers, or groupings.
+
+Key Insights:
+
+-   PremiumPrice has a right-skewed distribution, confirming that most customers pay mid-range premiums, but a few pay much higher.
+
+-   BMI and Weight also show broad spread — useful for pricing based on body metrics.
+
+Business Interpretation:
+
+-   Premium pricing needs to handle a wide range of cases — standardized pricing may not be fair or profitable.
+
+-   Emphasizes the need for tiered risk-based premiums.
+
+**3. Violin Plots (PremiumPrice vs Categorical Features)**
+
+Purpose: Show how PremiumPrice varies by binary health conditions, such as: Diabetes, Blood Pressure, Chronic Disease, Transplants, Allergies, etc.
+
+What We Saw: Clear upward shifts in premium for those with: Chronic disease, Transplant history, Cancer in family, Allergies showed minimal effect.
+
+Business Interpretation:
+
+-   Visual validation that risk-based pricing is justified.
+
+-   Helps actuaries identify which medical conditions drive costs up most.
+
+-   Supports development of health screening questionnaires.
+
+**4. Correlation Matrix (Heatmap)**
+
+Purpose: Explore linear relationships between all numeric variables.
+
+Observations: PremiumPrice is moderately correlated with: Age, Weight, Number of Surgeries, Chronic Disease, Correlations are not extremely high → supports use of flexible models.
+
+Business Interpretation:
+
+-   No single factor dictates price → pricing models must consider multiple interactions.
+
+-   Feature engineering (e.g., Age × Weight) is important for predictive accuracy.
+
+##Comparison to LogPremiumPrice and PremiumPrice
+
+```{r}
+df_log <- df
+df_log$logPrice <- log(df$PremiumPrice + 1)
+# Check histogram of the original and log price
+par(mfrow = c(1, 2))
+hist(df_log$PremiumPrice, main = "Original Price", xlab = "PremiumPrice")
+hist(log(df_log$PremiumPrice + 1), main = "Log Price", xlab = "log(PremiumPrice + 1)")
+```
+
+The results:
+
+-   Original PremiumPrice (left plot): The distribution is right-skewed, with a sharp peak around 20,000 and a long tail toward higher prices.
+
+-   Log(PremiumPrice + 1) (right plot): The distribution is much more symmetric and closer to normal — which is typically better for many regression models.
+
+## Scatter plot with hypothesis test (Pearson correlation)
+
+```{r}
+#Discrete variables include Age, Height, Weight, BMI (x variables) 
+#Premium price as y variable 
+
+num_labels <- c("Age", "Weight", "Height", "BMI")
+
+for (x in num_labels) {
+  
+  # Run Pearson correlation test
+  test <- cor.test(df[[x]], df$PremiumPrice, method = "pearson")
+  r <- round(test$estimate, 2)
+  p <- signif(test$p.value, 3)
+  
+  #Scatter Plot
+  print(
+    ggplot(df, aes_string(x = x, y = "PremiumPrice")) +
+      geom_point(color = "steelblue", alpha = 0.6) +
+      geom_smooth(method = "lm", se = FALSE, color = "darkred", linetype = "dashed") +
+      theme_minimal() +
+      labs(
+        title = paste("PremiumPrice vs", x),
+        subtitle = paste("Pearson r =", r, "| p-value =", p),
+        x = x,
+        y = "PremiumPrice"
+      )
+  )
+}
+```
+
+## Conducting T-test and ANOVA test to quantity if the difference is significant
+
+```{r}
+for (x in cat_labels) {
+  df[[x]] <- as.factor(df[[x]])  # ensure it's a factor
+  formula <- as.formula(paste("PremiumPrice ~", x))
+  
+  if (length(unique(df[[x]])) == 2) {
+    test <- t.test(formula, data = df)
+    cat("\n", x, "- t-test\n")
+  } else {
+    test <- aov(formula, data = df)
+    cat("\n", x, "- ANOVA\n")
+    print(summary(test))
+    next
+  }
+  
+  print(test)
+}
+```
+
+The results shows:
+
+-   Diabetes is associated with higher premiums.
+
+-   Blood pressure issues are strongly linked to higher premiums.
+
+-   Transplant history is highly associated with much higher premiums.
+
+-   Chronic disease status is strongly linked to increased premiums.
+
+-   Allergies do not significantly impact PremiumPrice.
+
+-   Family cancer history is linked to slightly higher premiums.
+
+More analysis: do a stepwise regression (forward and combination of forward and backwards), then remove the one that is not significant.
+Then we look at the multi-collinearity.
+
+We standardized the model using the log transformation where In(Price) for the linear regression and regularized models.
+
+## Stepwise regression for feature selection
+
+```{r}
+
+intercept_only <- lm(PremiumPrice ~ 1, data=df)
+
+allVars <- lm(PremiumPrice ~., data=df)
+
+
+#forward stepwise regression
+forward <- stats::step(intercept_only, direction='forward', scope=formula(allVars), trace=0)
+forward
+
+summary(forward)
+
+intercept_only_log <- lm(logPrice ~ 1, data=df_log)
+
+allVars_log <- lm(logPrice ~., data=df_log)
+forward_log <- stats::step(intercept_only, direction='forward', scope=formula(allVars), trace=0)
+forward_log
+summary(forward_log)
+
+
+#forward stepwise regression
+forward <- stats::step(intercept_only, direction='forward', scope=formula(allVars), trace=0)
+forward
+
+
+#Mixture of both forward and backward selection
+
+both <- stats::step(intercept_only, direction='both', scope=formula(allVars), trace=0)
+
+summary(both)
+
+```
+
+Due to the forward stepwise regression, the following selected variables are: Age, AnyTransplants, AnyChronicDiseases, Weight, HistoryofCancerInFamily, NumberofMajorSurgeries.
+
+Forward selection had the same results when using either premium price or log transformed premium price as a target.
+```{r}
+df_new <- df |>
+  dplyr::select(PremiumPrice, Age, AnyTransplants, AnyChronicDiseases, Weight, HistoryOfCancerInFamily, NumberOfMajorSurgeries)
+
+#ensuring that it is a numerical data
+df_new[] <- sapply(df_new, as.numeric)
+```
+
+# Regression Analysis (Baseline, Interaction, Lasso, Ridge) - need to be updated to logPremiumPrice and the df_regression
+
+```{r}
+
+#New dataframe for regression models using the logPremiumPrice 
+df_regression <- df_log %>%
+ dplyr::select(logPrice, Age, AnyTransplants, AnyChronicDiseases, Weight, HistoryOfCancerInFamily, NumberOfMajorSurgeries)
+
+#Sort out the remaining linear regression equations using the df_regression 
+no_int <- aov(logPrice ~ Age + Weight , data = df_regression)
+
+interaction <- aov(logPrice ~ Age + Weight + Age:Weight, data = df_regression)
+
+no_int
+
+interaction
+#2
+
+summary(no_int)
+
+summary(interaction)
+
+#3
+
+summary(lm(logPrice ~ Age+ Weight + Age:Weight, data = df_regression))
+
+summary(lm(logPrice ~ Age + Weight, data = df_regression))
+
+#4
+
+categorical <- lm(logPrice~.,data=df_regression)
+
+categorical
+
+summary(categorical)
+
+#Lasso regression model
+
+y <- df_regression$logPrice
+
+X <- data.matrix(df_regression[,c("Age","AnyTransplants","Weight","AnyChronicDiseases","HistoryOfCancerInFamily","NumberOfMajorSurgeries")])
+
+#Finding optimal lambda value
+
+cross_validation <- cv.glmnet(X,y,alpha=1)
+cross_validation
+
+min_mse <- cross_validation$lambda.min
+min_mse
+
+plot(cross_validation)
+
+#final_model
+
+final_model <- glmnet(X,y,alpha=1,lambda=min_mse)
+coef(final_model)
+
+#calculating r-squared
+predicitons <- predict(final_model, s=min_mse,newx=X)
+
+sst <- sum((y-mean(y))^2)
+sse <- sum((predicitons-y)^2)
+
+rsq <- 1 - sse/sst
+
+rsq
+
+#ridge regression model
+
+ridge_model <- glmnet(X,y,alpha=0, lambda=min_mse)
+coef(ridge_model)
+
+ridge_predicitons <- predict(ridge_model, s=min_mse,newx=X)
+
+ridge_sst <- sum((y-mean(y))^2)
+ridge_sse <- sum((ridge_predicitons-y)^2)
+
+ridge_rsq <- 1 - ridge_sse/ridge_sst
+
+ridge_rsq
+```
+**Ridge and Lasso regression**
+
+The ridge regression model produced and R-Squared value of 0.658 indicating that approximately
+65.8 percent in the variation in premium prices can be explained by the model.
+
+The lasso regression model produced and R-Squared value of 0.658 indicating that approximately
+65.8 percent in the variation in premium prices can be explained by the model.
+
+
+# Machine Learning Models: Tree-Based Methods
+
+We use the PremiumPrice variables instead of the logs because:
+
+-   Decision trees, and Xgboost model don’t assume normality or linearity, so they handle skewed distributions well.
+
+-   They split the feature space based on thresholds, not based on mean or variance, so log-transforming the target is not essential.
+
+-   The end goal was to predict predict and interpret PremiumPrice in dollars, and see which model is accurate in predicting the Premium Prices.
+
+## Decision Tree
+
+```{r}
+set.seed(12345)
+
+# Split into training and test sets (60/40 split)
+# Split into features and label
+y <- df_new$PremiumPrice
+X <- df_new %>% dplyr::select(-PremiumPrice)
+
+train_indices <- sample(1:nrow(df), 0.6 * nrow(df))
+
+# Create training and testing data frames for tidymodels
+train_data <- df_new[train_indices, ]
+test_data <- df_new[-train_indices, ]
+
+# Model specification
+tree_spec <- decision_tree() %>%
+  set_engine("rpart") %>%
+  set_mode("regression")
+
+# Model fitting
+tree_fit <- tree_spec %>%
+  fit(PremiumPrice ~ ., data = train_data)
+
+# Predict on test data
+predictions <- predict(tree_fit, new_data = test_data) %>%
+  pull(.pred)
+
+# Evaluate model performance
+results_df <- test_data %>%
+  mutate(predictions = predictions)
+
+# Compute RMSE
+rmse_result <- rmse(results_df, truth = PremiumPrice, estimate = predictions)
+
+# Compute MAE
+mae_result <- mae(results_df, truth = PremiumPrice, estimate = predictions)
+
+# Compute R-squared
+rsq_result <- rsq(results_df, truth = PremiumPrice, estimate = predictions)
+
+# Print results
+print(rmse_result)
+print(mae_result)
+print(rsq_result)
+
+# Visualize the tree
+rpart.plot(tree_fit$fit, type = 4, extra = 101, under = TRUE, cex = 0.8, box.palette = "auto")
+```
+
+```{r}
+# Create a data frame with actual and predicted values
+results_df_tree <- data.frame(
+  Actual = test_data$PremiumPrice,
+  Predicted = predictions
+)
+
+
+
+# Plot actual vs predicted
+ggplot(results_df_tree, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.6, color = "forestgreen") +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "darkred") +
+  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dotted") +
+  theme_minimal() +
+  labs(
+    title = "Predicted vs Actual PremiumPrice (Decision Tree)",
+    x = "Actual PremiumPrice",
+    y = "Predicted PremiumPrice"
+  )
+```
+
+```{r}
+# Calculate residuals
+residuals_df <- data.frame(
+  Actual = test_data$PremiumPrice,
+  Predicted = predictions,
+  Residuals = test_data$PremiumPrice - predictions
+)
+
+# Plot residuals
+ggplot(residuals_df, aes(x = Actual, y = Residuals)) +
+  geom_point(alpha = 0.6, color = "darkorange") +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "black") +
+  geom_smooth(method = "loess", se = FALSE, color = "red", linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Residuals vs Actual PremiumPrice (Decision Tree)",
+    x = "Actual PremiumPrice",
+    y = "Residuals (Actual - Predicted)"
+  )
+
+```
+
+Visual Analysis:
+
+-   Predicted vs Actual Plot: Shows a general trend following the diagonal, but with some flattening—indicating the tree predicts close to the average price for many cases (limited flexibility).
+
+-   Residual Plot: Shows systematic patterns (underprediction of high prices, overprediction of low prices).
+    The loess curve is curved, not flat—indicating bias.
+
+Interpretation:
+
+-   Strengths: Interpretable and simple; good for business users who need logic-based rules.
+
+-   Weaknesses: Tends to underfit complex relationships (e.g., interactions between Age × ChronicDisease).
+    Not optimal for modeling premium price variation in detail.
+
+## XGBoost Model
+
+```{r}
+X_train <- as.matrix(X[train_indices, ])
+y_train <- y[train_indices]
+X_test <- as.matrix(X[-train_indices, ])
+y_test <- y[-train_indices]
+
+# Convert to DMatrix format for XGBoost
+dtrain <- xgb.DMatrix(data = X_train, label = y_train)
+dtest <- xgb.DMatrix(data = X_test, label = y_test)
+
+# Train XGBoost Regressor
+xgb_model <- xgboost(data = dtrain,
+                     objective = "reg:squarederror",
+                     nrounds = 100,
+                     max_depth = 4,
+                     eta = 0.1,
+                     verbose = 0)
+
+# Predict
+preds <- predict(xgb_model, dtest)
+
+# Feature Importance Plot
+importance <- xgb.importance(model = xgb_model, feature_names = colnames(X))
+xgb.plot.importance(importance_matrix = importance)
+
+# True labels
+y_test <- getinfo(dtest, "label")
+
+# Compute evaluation metrics
+results_caret <- postResample(pred = preds, obs = y_test)
+
+# Create a clean results data frame
+resultstest <- data.frame(
+  Results = c("RMSE Test", "R Squared Test", "MAE Test"),
+  Score = as.numeric(results_caret)
+)
+
+#Model Evaluation Metrics
+print(resultstest)
+```
+
+```{r}
+# --- Generate Submission Format for PredictedPremiumPrice ---
+submission_xgb <- data.frame(
+  Id = 1:nrow(X_test),
+  PredictedPremiumPrice = preds
+)
+
+print("Submission DataFrame:")
+head(submission_xgb, 10)
+
+# Create a data frame for plotting
+results_df <- data.frame(
+  Actual = getinfo(dtest, "label"),
+  Predicted = preds
+)
+
+# Plot actual vs predicted values
+ggplot(results_df, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "darkred") +
+  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dotted") +
+  theme_minimal() +
+  labs(
+    title = "Predicted vs Actual PremiumPrice (XGBoost)",
+    x = "Actual PremiumPrice",
+    y = "Predicted PremiumPrice"
+)
+
+```
+
+```{r}
+# Compute residuals for XGBoost
+residuals_xgb <- data.frame(
+  Actual = getinfo(dtest, "label"),
+  Predicted = preds,
+  Residuals = y_test - preds
+)
+
+# Plot residuals
+ggplot(residuals_xgb, aes(x = Actual, y = Residuals)) +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "black") +
+  geom_smooth(method = "loess", se = FALSE, color = "red", linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Residuals vs Actual PremiumPrice (XGBoost)",
+    x = "Actual PremiumPrice",
+    y = "Residuals (Actual - Predicted)"
+  )
+```
+
+Visual Analysis:
+
+-   Predicted vs Actual Plot: Much closer fit to the diagonal.Better spread of predictions and more accuracy across all premium levels.
+
+-   Residual Plot: More centered around 0 and shows less bias than the decision tree.
+    Some increasing error variance (heteroscedasticity), but fewer systematic patterns.
+
+Interpretation:
+
+-   Strengths: Captures nonlinear patterns, interactions, and subtle effects.
+    Stronger generalization.
+    More accurate premium pricing.
+
+-   Weaknesses: Less interpretable.
+
+# Clustering Methods: KMeans Clustering
+
+We represented distinct groups such as low-risk customers, moderate-risk customers, high-risk customers, and very high-risk customers, each with varying premium levels and health characteristics.
+
+```{r}
+clustering_df <- df_new
+
+# Standardize the data (important for clustering)
+clustering_scaled <- scale(clustering_df)
+
+#Determine Optimal Number of Clusters
+
+fviz_nbclust(clustering_scaled, kmeans, method = "wss") + 
+  labs(title = "Elbow Method for Optimal Clusters")
+
+# There is a steep drop from k = 1 to k = 4.
+# After k = 4, the WSS reduction becomes less significant.
+# This makes k = 4 a good candidate for the optimal number of clusters.
+
+# Set number of clusters to 4 (low, moderate, high, very high risk)
+kmeans_result <- kmeans(clustering_scaled, centers = 4, nstart = 25)
+
+# Add cluster labels back to original data
+clustering_df$RiskCluster <- as.factor(kmeans_result$cluster)
+
+# View cluster counts
+table(clustering_df$RiskCluster)
+
+fviz_cluster(kmeans_result, data = clustering_scaled,
+             ellipse.type = "norm",
+             palette = "jco",
+             ggtheme = theme_minimal(),
+             main = "Customer Segments by Risk")
+
+#Label Risk Tiers
+risk_labels <- c("Low Risk", "Moderate Risk", "High Risk", "Very High Risk")
+clustering_df$RiskTier <- factor(clustering_df$RiskCluster,
+                      levels = c("1", "2", "3", "4"),
+                      labels = risk_labels)
+
+# Preview results
+head(clustering_df %>% dplyr::select(PremiumPrice, RiskTier))
+```
+
+Interpretation:
+
+| Cluster ID | Risk Tier | Count | Interpretation |
+|------------------|------------------|------------------|-------------------|
+| 1 | Low Risk | 116 | Likely younger, healthier, fewer surgeries |
+| 2 | Moderate Risk | 156 | Mild health conditions or aging effects |
+| 3 | High Risk | 421 | Largest group — possibly middle-aged with issues |
+| 4 | Very High Risk | 293 | Older or multiple chronic conditions |
+
+## ChatGPT (Recommendations for the employers and conclusion - need to refined later)
+
+This project demonstrates the power of integrating data science, economics, and actuarial reasoning to uncover key drivers of medical insurance premium pricing.
+By leveraging a combination of statistical testing, regression modeling, tree-based machine learning (e.g., XGBoost), and unsupervised clustering, we effectively quantified how factors like age, chronic conditions, transplant history, and major surgeries influence premium costs.
+Our models not only forecast premium prices with strong accuracy (XGBoost R² ≈ 0.80), but also segment customers into actionable risk tiers, enabling more personalized and data-driven pricing strategies.
+
+To translate these insights into practice, we recommend that insurers adopt a multi-tiered pricing strategy aligned with customer health profiles.
+Specifically, premiums can be dynamically adjusted using risk tiers derived from clustering (low to very high risk), with modular pricing for high-cost medical conditions such as chronic illnesses or transplant history.
+Additionally, integrating age-weight interactions into pricing formulas can improve fairness and accuracy, while incentive-based discounts—such as for stable health indicators or participation in wellness programs—can encourage preventive behavior.
+Lastly, ongoing monitoring of model fairness and the inclusion of broader socioeconomic features will help ensure that pricing remains both data-driven and socially responsible.
+
+Looking ahead, predictive performance can be enhanced through feature interaction modeling, advanced ensemble techniques, and interpretability tools like SHAP for business transparency.
+Incorporating socioeconomic data and fairness audits can ensure pricing strategies remain both equitable and effective.
+This work provides a replicable framework for insurance companies and risk managers to automate premium forecasting, understand medical risk dynamics, and align pricing with customer profiles—all crucial capabilities in the future of personalized insurance analytics.
