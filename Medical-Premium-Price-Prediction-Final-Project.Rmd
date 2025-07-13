@@ -682,7 +682,7 @@ Interpretation:
 | 3 | High Risk | 421 | Largest group — possibly middle-aged with issues |
 | 4 | Very High Risk | 293 | Older or multiple chronic conditions |
 
-## ChatGPT (Recommendations for the employers and conclusion - need to refined later)
+
 
 This project demonstrates the power of integrating data science, economics, and actuarial reasoning to uncover key drivers of medical insurance premium pricing.
 By leveraging a combination of statistical testing, regression modeling, tree-based machine learning (e.g., XGBoost), and unsupervised clustering, we effectively quantified how factors like age, chronic conditions, transplant history, and major surgeries influence premium costs.
